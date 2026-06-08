@@ -85,15 +85,55 @@ class FolderClassificationDataset(Dataset):
                 return candidate
         return None
 
-    def _sdnet_label_from_path(self, path: Path) -> int:
-        parts = [p.lower() for p in path.relative_to(self.root).parts]
-        for part in parts[:-1]:
-            # CD, CW, CP, cracked, crack -> cracked
-            if part in {"cd", "cw", "cp", "cracked", "crack", "positive"}:
-                return 1
-            # UD, UW, UP, uncracked, noncrack -> uncracked
-            if part in {"ud", "uw", "up", "uncracked", "noncrack", "non-crack", "negative"}:
+    def _sdnet_label_from_path(self, path):
+        """
+        Infer binary SDNET2018 label from the image path.
+
+        Supports both common SDNET2018 layouts:
+
+        1) Decks/Cracked/image.jpg
+        Decks/Non-cracked/image.jpg
+
+        2) D/CD/image.jpg
+        D/UD/image.jpg
+        P/CP/image.jpg
+        P/UP/image.jpg
+        W/CW/image.jpg
+        W/UW/image.jpg
+
+        Returns:
+            1 = cracked
+            0 = non-cracked
+        """
+        parts = [p.lower() for p in path.parts]
+
+        cracked_tokens = {
+            "cracked",
+            "crack",
+            "cd",
+            "cp",
+            "cw",
+        }
+
+        non_cracked_tokens = {
+            "non-cracked",
+            "non_cracked",
+            "noncracked",
+            "uncracked",
+            "no-crack",
+            "no_crack",
+            "nocrack",
+            "ud",
+            "up",
+            "uw",
+        }
+
+        for part in parts:
+            if part in non_cracked_tokens:
                 return 0
+            if part in cracked_tokens:
+                return 1
+
         raise ValueError(f"Could not infer SDNET cracked/uncracked label from path: {path}")
 
     def _folder_label_from_path(self, base: Path, path: Path) -> str:
