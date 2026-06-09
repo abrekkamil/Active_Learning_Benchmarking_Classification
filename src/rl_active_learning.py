@@ -404,6 +404,12 @@ class ActiveLearningSystemRL:
 
         candidate_ratio = getattr(self.config, "candidate_ratio", 0.2)
         top_k = int(candidate_ratio * len(entropy_scores))
+        if getattr(self.config, "dynamic_query_size", False):
+            max_budget = max([int(b) for b in getattr(self.config, "budget_options", [self.config.query_size])])
+            top_k = max(top_k, max_budget)
+        else:
+            top_k = max(top_k, int(self.config.query_size) if self.config.query_size > 1 else 1)
+
         top_k = max(1, min(top_k, len(entropy_scores)))
 
         _, candidate_idx = torch.topk(entropy_scores, top_k)
@@ -425,17 +431,31 @@ class ActiveLearningSystemRL:
         # ==========================================================
         if getattr(self.config, "dynamic_query_size", False):
 
-            budget_ratio = torch.sigmoid(budget_logits)
-            budget_ratio = torch.clamp(budget_ratio, 0.01, 0.15)  # Limit to 1-15% of pool
+            # Dynamic RAL should choose one discrete query size from config.budget_options,
+            # not a free percentage between 1% and 15% of the pool.
+            budget_options = getattr(self.config, "budget_options", [250, 500, 750, 1000])
+            budget_options = [int(b) for b in budget_options]
 
-            budget = int(budget_ratio.item() * len(candidate_pool))
-            budget = max(1, budget)
+            budget_probs = F.softmax(budget_logits / self.policy_temp, dim=0)
+            budget_probs = budget_probs.clamp_min(1e-12)
 
-            log_prob_budget = torch.log(budget_ratio + 1e-12)
+            budget_dist = torch.distributions.Categorical(probs=budget_probs)
+            budget_action = budget_dist.sample()
 
-            p = budget_ratio
-            entropy_budget = -(p * torch.log(p + 1e-12) +
-                            (1 - p) * torch.log(1 - p + 1e-12))
+            selected_budget_option = budget_options[int(budget_action.item())]
+
+            # Cannot query more samples than available in the candidate pool.
+            budget = min(selected_budget_option, len(candidate_pool))
+            budget = max(1, int(budget))
+
+            log_prob_budget = budget_dist.log_prob(budget_action)
+            entropy_budget = budget_dist.entropy()
+
+            self.logger.info(
+                f"Dynamic budget selected: {selected_budget_option} "
+                f"(effective budget after clamp: {budget}) | "
+                f"budget options: {budget_options}"
+            )
 
         else:
 
@@ -554,7 +574,7 @@ class ActiveLearningSystemRL:
         self.prev_score = score 
         # Cost penalty
         if getattr(self.config, "dynamic_query_size", False):
-            reward = reward - self.config.cost_lambda * (budget / len(self.unlabeled_indices))
+            reward = reward - self.config.cost_lambda * (budget / self.total_samples)
         # Policy update ONLY if a query actually happened
         advantage = torch.tensor(0.0, device=self.device)
         if log_prob_sum is not None:
